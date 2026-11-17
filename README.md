@@ -13,7 +13,7 @@ It is a [Forge](https://developer.atlassian.com/platform/forge/) app for Jira Cl
 - **MCP tools** (Forge `rovo:mcp`), so the forecast, calibration and scoreboard can be used from Rovo Studio agents or from MCP clients such as Claude Code, Cursor or Codex, once a site admin turns them on. [`skills/ship-odds/SKILL.md`](skills/ship-odds/SKILL.md) tells a coding agent how to use them;
 - a **scoreboard**: record a forecast, optionally with your own guess ("I think 70%"). After the target date it is graded automatically, and the raw model, the corrected model and the people get Brier scores, so the correction is checked live too.
 
-Status: **0.2.0, not yet deployed to a live Jira site.** The forecasting, correction, hindcast, JQL and grading logic is covered by automated tests against a fake Jira (`npm test`, or `python -m unittest test_ship_odds`). The Forge UI and Rovo wiring still have to be tried on a real developer site; this README will say when they have been.
+Status: **0.2.1, not yet deployed to a live Jira site.** The forecasting, correction, hindcast, JQL and grading logic is covered by automated tests against a fake Jira (`npm test`, or `python -m unittest test_ship_odds`). On 2026-11-17 the 0.2.0 code was installed from npm on a Windows machine with Node 24, and all 33 JavaScript tests passed there. 0.2.1 pins every dependency to an exact version, so the build is reproducible. The Forge UI and Rovo wiring still have to be tried on a real developer site; this README will say when they have been.
 
 ## How it works
 
@@ -57,6 +57,8 @@ forge deploy
 forge install       # pick your Jira site
 ```
 
+Forge CLI 15 needs Node.js 22.23.4 or newer, or 24.22.1 or newer.
+
 To use the MCP tools from outside Rovo, a site admin turns them on under **Atlassian Administration > Apps > Sites > (site) > Connected apps > Ship Odds > Tools**. The endpoint is `https://mcp.atlassian.com/forge/<appId>` (the UUID at the end of `app.id` in `manifest.yml`).
 
 ## Demo data from a real project (`demo/`)
@@ -68,11 +70,13 @@ A forecasting app needs history to show anything, and a fresh developer site has
 
 Every imported issue links back to its Apache original and says the dates were moved. One limit: Apache assigns fix versions in hindsight, so the "open at the cutoff" set is what eventually shipped in that version, not what the team planned at the time.
 
+**First run (2026-11-17).** The script chose Apache Solr, fix version 10.1: 421 issues finished in the year before the cutoff (2026-09-28), and 27 of the version's issues were still open at the cutoff. The raw model gave 96% odds that all 27 would be done by the release day (2026-10-26). In fact 25 were, and the last 2 were finished 4 days later, on 2026-10-30. A single forecast proves nothing either way. Telling a well-calibrated 96% from an overconfident one takes many forecasts, which is why the study above exists.
+
 ## Tests
 
 ```sh
 npm test                                     # node --test, no dependencies needed
-python -m unittest test_ship_odds            # the same, plus manifest checks
+python -m unittest test_ship_odds            # the same, plus manifest and package checks
 python -m unittest demo/test_apache_demo.py  # demo builder, offline
 ```
 

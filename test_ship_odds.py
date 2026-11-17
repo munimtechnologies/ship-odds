@@ -4,6 +4,7 @@
 
 The core (src/core/*.js) has no dependencies, so `node --test` needs no npm install.
 """
+import json
 import os
 import re
 import shutil
@@ -68,6 +69,13 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("storage:app", self.text)
         self.assertNotRegex(self.text, r"write:jira-work")
 
+    def test_runtime_is_supported(self):
+        # Forge accepts nodejs20.x, nodejs22.x and nodejs24.x (manifest reference, checked 2026-11-17).
+        self.assertRegex(self.text, r"(?m)^    name: nodejs(20|22|24)\.x$")
+        mem = re.search(r"(?m)^    memoryMB: (\d+)$", self.text)
+        if mem:
+            self.assertTrue(128 <= int(mem.group(1)) <= 1024)
+
     def test_timeout_only_on_trigger(self):
         # timeoutSeconds only affects scheduled triggers and async consumers.
         self.assertEqual(len(re.findall(r"timeoutSeconds:", self.text)), 1)
@@ -82,6 +90,18 @@ class ManifestTests(unittest.TestCase):
             self.assertIn('"license": "Apache-2.0"', f.read())
         with open(os.path.join(HERE, "LICENSE"), encoding="utf-8") as f:
             self.assertIn("Apache License", f.read())
+
+
+class PackageTests(unittest.TestCase):
+    def test_dependencies_are_pinned(self):
+        # A Marketplace / Codegeist build must be reproducible: exact versions, no "latest" or ranges.
+        with open(os.path.join(HERE, "package.json"), encoding="utf-8") as f:
+            pkg = json.load(f)
+        deps = pkg.get("dependencies", {})
+        self.assertIn("@forge/react", deps)
+        for name, ver in deps.items():
+            self.assertRegex(ver, r"^\d+\.\d+\.\d+$", "%s is not pinned: %s" % (name, ver))
+        self.assertRegex(pkg["version"], r"^\d+\.\d+\.\d+$")
 
 
 class SkillTests(unittest.TestCase):
