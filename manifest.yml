@@ -1,0 +1,146 @@
+modules:
+  jira:projectPage:
+    - key: ship-odds-project-page
+      resource: main
+      resolver:
+        function: resolver
+      render: native
+      title: Ship Odds
+  rovo:agent:
+    - key: ship-odds-agent
+      name: Ship Odds
+      description: Forecasts when Jira work will ship, with odds from your team's own finished work, and shows how often those odds came true in the past.
+      prompt: resource:agent-prompt;agent.md
+      conversationStarters:
+        - What are the odds we finish this version by the end of the month?
+        - How often have your forecasts been right for this project?
+        - Show the forecast scoreboard
+      actions:
+        - ship-odds-forecast
+        - ship-odds-calibration
+        - ship-odds-record
+        - ship-odds-scoreboard
+  rovo:mcp:
+    - key: ship-odds-mcp
+      name: Ship Odds
+      tools:
+        - ship-odds-forecast
+        - ship-odds-calibration
+        - ship-odds-scoreboard
+  action:
+    - key: ship-odds-forecast
+      name: Forecast delivery odds
+      function: forecast-action
+      actionVerb: GET
+      description: Computes the probability that the open Jira work items of a target (a version name, an epic key, or JQL) are all done by a target date, plus the 50%, 85% and 95% finish dates, by Monte Carlo simulation of the scope's daily throughput over a recent window. Read-only.
+      inputs:
+        target:
+          title: Target
+          type: string
+          required: true
+          description: What has to ship. A fix version name such as 2.4, an epic key such as ENG-120 (its child issues), or a JQL query.
+        targetDate:
+          title: Target date
+          type: string
+          required: true
+          description: The date to beat, in YYYY-MM-DD format.
+        scope:
+          title: Scope
+          type: string
+          required: false
+          description: Project key or JQL whose finished work sets the pace. Defaults to the current Jira project.
+        windowDays:
+          title: History window in days
+          type: integer
+          required: false
+          description: How many past days of finished work to sample, 14 to 365. Default 90.
+    - key: ship-odds-calibration
+      name: Check forecast calibration
+      function: calibration-action
+      actionVerb: GET
+      description: Replays the same forecasting model on the scope's past year and reports, for confidence levels 50%, 70%, 85% and 95%, how often its stated odds came true, with a verdict (consistent, overconfident or underconfident). Use it when someone asks whether to trust a forecast. Read-only.
+      inputs:
+        scope:
+          title: Scope
+          type: string
+          required: false
+          description: Project key or JQL whose history to replay. Defaults to the current Jira project.
+        windowDays:
+          title: History window in days
+          type: integer
+          required: false
+          description: Past days the model sees at each replayed date, 14 to 365. Default 90.
+        horizonDays:
+          title: Horizon in days
+          type: integer
+          required: false
+          description: How far ahead each replayed forecast looks, 7 to 56. Default 14.
+    - key: ship-odds-record
+      name: Record a forecast
+      function: record-action
+      actionVerb: CREATE
+      description: Makes a delivery forecast and saves it, with the user's own probability if given, so it is graded automatically the day after the target date and counted on the scoreboard.
+      inputs:
+        target:
+          title: Target
+          type: string
+          required: true
+          description: What has to ship. A fix version name, an epic key, or a JQL query.
+        targetDate:
+          title: Target date
+          type: string
+          required: true
+          description: The date to beat, in YYYY-MM-DD format.
+        scope:
+          title: Scope
+          type: string
+          required: false
+          description: Project key or JQL whose finished work sets the pace. Defaults to the current Jira project.
+        yourProbability:
+          title: Your own probability
+          type: number
+          required: false
+          description: The user's own odds of making the date, as 0 to 1 or 0 to 100.
+    - key: ship-odds-scoreboard
+      name: Show the forecast scoreboard
+      function: scoreboard-action
+      actionVerb: GET
+      description: Lists recorded forecasts and their outcomes, with Brier scores for the model and for people (lower is better). Read-only.
+      inputs:
+        detail:
+          title: Detail
+          type: string
+          required: false
+          description: Not used; leave empty.
+  scheduledTrigger:
+    - key: ship-odds-daily-grading
+      function: grade-daily
+      interval: day
+  function:
+    - key: resolver
+      handler: index.handler
+    - key: forecast-action
+      handler: index.forecastAction
+    - key: calibration-action
+      handler: index.calibrationAction
+    - key: record-action
+      handler: index.recordAction
+    - key: scoreboard-action
+      handler: index.scoreboardAction
+    - key: grade-daily
+      handler: index.gradeDaily
+resources:
+  - key: main
+    path: src/frontend/index.jsx
+  - key: agent-prompt
+    path: prompts
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000
+permissions:
+  scopes:
+    - read:jira-work
+    - storage:app

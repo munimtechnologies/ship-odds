@@ -1,0 +1,19 @@
+{
+  "name": "ship-odds",
+  "version": "0.1.0",
+  "description": "Jira delivery forecasts that grade themselves: Monte Carlo odds from your own throughput, a hindcast of how often those odds came true, and a scoreboard. Forge app with a Rovo agent and MCP tools.",
+  "license": "Apache-2.0",
+  "author": "MV2 of Munim, Inc. <mv2@munimtech.com>",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/forecast.test.js test/jql.test.js test/service.test.js"
+  },
+  "dependencies": {
+    "@forge/api": "latest",
+    "@forge/bridge": "latest",
+    "@forge/kvs": "latest",
+    "@forge/react": "latest",
+    "@forge/resolver": "latest",
+    "react": "^18.3.1"
+  }
+}
