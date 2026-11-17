@@ -21,6 +21,7 @@ import ForgeReconciler, {
 import { invoke } from '@forge/bridge';
 
 const pct = (p) => (p == null ? '-' : `${Math.round(p * 100)}%`);
+const day = (d, fallback = 'later than the simulation reached') => d || fallback;
 
 function table(head, rows) {
   return {
@@ -38,7 +39,7 @@ function Calibration({ cal }) {
     return <SectionMessage appearance="information"><Text>{cal.error || cal.reason}</Text></SectionMessage>;
   }
   const t = table(
-    ['Odds the model gave', 'How often it came true', 'Forecasts', 'Verdict'],
+    ['Odds the raw model gave', 'How often it came true', 'Forecasts', 'Verdict'],
     cal.table.map((r) => [
       pct(r.stated),
       `${pct(r.hitRate)} (${pct(r.interval[0])} to ${pct(r.interval[1])})`,
@@ -54,7 +55,7 @@ function Calibration({ cal }) {
       <DynamicTable head={t.head} rows={t.rows} />
       <Text>
         Replayed on {cal.finishedItems} items finished since {cal.historySince}, using {cal.windowDays}-day
-        windows. Past windows overlap, so treat the ranges as a rough guide.
+        windows. Past windows overlap, so treat the ranges as a rough guide. This record is what the corrected odds above learn from.
       </Text>
     </Stack>
   );
@@ -65,11 +66,23 @@ function Result({ res }) {
   if (res.error || !res.ok) {
     return <SectionMessage appearance="warning"><Text>{res.error || res.reason}</Text></SectionMessage>;
   }
+  const c = res.corrected;
+  const headline = c
+    ? `${pct(c.probability)} chance to finish by ${res.targetDate} (corrected; the raw model says ${pct(res.probability)})`
+    : `${pct(res.probability)} chance to finish by ${res.targetDate}`;
   return (
-    <SectionMessage appearance="success" title={`${pct(res.probability)} chance to finish by ${res.targetDate}`}>
+    <SectionMessage appearance={c && c.probability < res.probability - 0.1 ? 'warning' : 'success'} title={headline}>
+      {c ? (
+        <Text>
+          Corrected dates: 50% by {day(c.dates.p50)}; 85% by {day(c.dates.p85)}; 95% by {day(c.dates.p95)}. The correction
+          comes from {c.basedOn.n} past {c.horizonDays}-day forecasts on this project: in {pct(c.basedOn.slowTail)} of them
+          the team landed in the model's slowest 15% (a calibrated model: 15%).
+        </Text>
+      ) : null}
       <Text>
-        {res.remaining} open items. Half of 10,000 simulated futures finish by {res.dates ? res.dates.p50 : '-'}; 85% by{' '}
-        {res.dates ? res.dates.p85 : '-'}; 95% by {res.dates ? res.dates.p95 : '-'}.
+        {res.remaining} open items. Raw model: half of {res.runs.toLocaleString('en-US')} simulated futures finish by{' '}
+        {res.dates ? day(res.dates.p50) : '-'}; 85% by {res.dates ? day(res.dates.p85) : '-'}; 95% by{' '}
+        {res.dates ? day(res.dates.p95) : '-'}.
       </Text>
       <Text>
         Based on {res.finishedInWindow} items finished in the last {res.windowDays} days ({res.throughputPerWeek} a week).{' '}
@@ -87,22 +100,24 @@ function Scoreboard({ board }) {
   if (!board) return <Spinner />;
   if (board.error) return <Text>{board.error}</Text>;
   const t = table(
-    ['Made', 'Target', 'By', 'Model', 'Person', 'Outcome'],
+    ['Made', 'Target', 'By', 'Raw model', 'Corrected', 'Person', 'Outcome'],
     board.recent.map((e) => [
       e.createdAt.slice(0, 10),
       e.targetJql,
       e.targetDate,
       pct(e.pModel),
+      pct(e.pCorrected),
       pct(e.pHuman),
       e.outcome == null ? 'open' : e.outcome ? 'shipped' : 'missed',
     ]),
   );
+  const b = (s) => (s && s.brier != null ? String(s.brier) : '-');
   return (
     <Stack space="space.100">
       <Text>
-        {board.graded} graded, {board.open} open. Brier score (lower is better): model{' '}
-        <Strong>{board.model.brier == null ? '-' : String(board.model.brier)}</Strong> over {board.model.n}, people{' '}
-        <Strong>{board.human.brier == null ? '-' : String(board.human.brier)}</Strong> over {board.human.n}.
+        {board.graded} graded, {board.open} open. Brier score (lower is better): raw model <Strong>{b(board.model)}</Strong>{' '}
+        over {board.model.n}, corrected <Strong>{b(board.corrected)}</Strong> over {board.corrected ? board.corrected.n : 0},
+        people <Strong>{b(board.human)}</Strong> over {board.human.n}.
       </Text>
       {board.recent.length ? <DynamicTable head={t.head} rows={t.rows} /> : <Text>No forecasts recorded yet.</Text>}
     </Stack>
@@ -139,7 +154,7 @@ function App() {
       <Stack space="space.100">
         <Heading as="h2">Ship Odds</Heading>
         <Text>
-          The odds of finishing on time, from this project's own throughput, and a record of how often those odds came true.
+          The odds of finishing on time, from this project's own throughput, corrected by how often such odds came true here before.
         </Text>
       </Stack>
       <Box>
@@ -155,7 +170,7 @@ function App() {
       </Box>
       {busy ? <Spinner /> : <Result res={res} />}
       <Stack space="space.100">
-        <Heading as="h3">How often were its odds right here?</Heading>
+        <Heading as="h3">How often were the raw odds right here?</Heading>
         <Calibration cal={cal} />
       </Stack>
       <Stack space="space.100">

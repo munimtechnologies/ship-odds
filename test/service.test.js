@@ -9,6 +9,7 @@ import {
   gradeDue,
   parseProbability,
   parseTargetDate,
+  pitHorizonFor,
   record,
   scoreboard,
   searchAll,
@@ -18,13 +19,17 @@ const NOW = '2026-11-17T12:00:00Z';
 const TODAY = dayIndex(NOW);
 const jiraTime = (day, hour = 9) => new Date(day * DAY_MS + hour * 3600 * 1000).toISOString().replace('Z', '+0000');
 
-// 2 items finished every day for the last 400 days, in Jira's own date format.
-const FINISHED = [];
-for (let d = 1; d <= 400; d++) {
-  for (let k = 0; k < 2; k++) {
-    FINISHED.push({ id: `h${d}-${k}`, key: `ENG-${1000 + d * 2 + k}`, fields: { statuscategorychangedate: jiraTime(TODAY - d) } });
+// `perDay` items finished every day for the last 400 days, in Jira's own date format.
+function finishedHistory(perDay = 2) {
+  const out = [];
+  for (let d = 1; d <= 400; d++) {
+    for (let k = 0; k < perDay; k++) {
+      out.push({ id: `h${d}-${k}`, key: `ENG-${1000 + d * perDay + k}`, fields: { statuscategorychangedate: jiraTime(TODAY - d) } });
+    }
   }
+  return out;
 }
+const FINISHED = finishedHistory(2);
 const OPEN = Array.from({ length: 10 }, (_, i) => ({ id: `o${i}`, key: `ENG-${101 + i}` }));
 
 // The same history as it looks after a CSV import done today: real resolution
@@ -91,6 +96,34 @@ test('forecast reads history and open items through paged search', async () => {
   assert.equal(tight.probability, 0);
 });
 
+test('forecast corrects its odds from a year of replayed forecasts', async () => {
+  const { search } = fakeJira();
+  const r = await forecast({ search, now: NOW, scope: 'ENG', target: '2.4', targetDate: dayToIso(TODAY + 4) });
+  assert.ok(r.corrected, JSON.stringify(r.warnings));
+  assert.ok(r.corrected.basedOn.n >= 30, `replayed ${r.corrected.basedOn.n}`);
+  assert.equal(r.corrected.horizonDays, 7, 'a 5-day target replays at the 7-day minimum');
+  // A perfectly steady team: the correction changes nothing at the extremes.
+  assert.equal(r.corrected.probability, 1);
+  assert.match(r.assumptions, /miss in the same way/);
+  const tight = await forecast({ search, now: NOW, scope: 'ENG', target: '2.4', targetDate: dayToIso(TODAY + 3) });
+  assert.equal(tight.corrected.probability, 0);
+});
+
+test('a year too big to read whole falls back to the window, uncorrected', async () => {
+  const { search } = fakeJira({ finished: finishedHistory(15) });
+  const r = await forecast({ search, now: NOW, scope: 'ENG', target: '2.4', targetDate: dayToIso(TODAY + 4) });
+  assert.equal(r.ok, true);
+  assert.equal(r.finishedInWindow, 1350);
+  assert.equal(r.corrected, null);
+  assert.ok(r.warnings.some((w) => /not corrected/.test(w)), JSON.stringify(r.warnings));
+});
+
+test('pitHorizonFor clamps to 7..56 days', () => {
+  assert.equal(pitHorizonFor(dayToIso(TODAY), NOW), 7);
+  assert.equal(pitHorizonFor(dayToIso(TODAY + 20), NOW), 21);
+  assert.equal(pitHorizonFor(dayToIso(TODAY + 200), NOW), 56);
+});
+
 test('imported history (status dates all today) is read by resolution date', async () => {
   const { search } = fakeJira({ finished: IMPORTED });
   const r = await forecast({ search, now: NOW, scope: 'ENG', target: '2.4', targetDate: dayToIso(TODAY + 4) });
@@ -127,6 +160,7 @@ test('record, grade the day after, and score', async () => {
   const saved = [...store.m.values()][0];
   assert.equal(saved.pHuman, 0.7);
   assert.equal(saved.pModel, 1);
+  assert.equal(saved.pCorrected, 1);
   assert.equal(saved.keys.length, 10);
   assert.equal(saved.outcome, null);
 
@@ -141,8 +175,10 @@ test('record, grade the day after, and score', async () => {
   const board = await scoreboard({ store });
   assert.equal(board.graded, 1);
   assert.equal(board.model.brier, 1);
+  assert.equal(board.corrected.brier, 1);
   assert.equal(board.human.brier, 0.49);
   assert.equal(board.recent[0].outcome, 0);
+  assert.equal(board.recent[0].pCorrected, 1);
 });
 
 test('searchAll stops when Jira repeats a page', async () => {

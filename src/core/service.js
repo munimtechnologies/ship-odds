@@ -5,7 +5,7 @@
 // `search(body)` must POST body to /rest/api/3/search/jql and return the JSON.
 // `store` needs get(key), set(key, value), list(prefix) -> [{key, value}].
 
-import { DAY_MS, dayIndex, dayToIso, forecastCompletion, hindcast, parseTime, scoreLedger } from './forecast.js';
+import { DAY_MS, dayIndex, dayToIso, forecastCompletion, hindcast, parseTime, pitHistory, scoreLedger } from './forecast.js';
 import { historyJql, lateJql, openJql, scopeToJql, targetToJql } from './jql.js';
 
 export const LIMITS = {
@@ -15,6 +15,7 @@ export const LIMITS = {
   maxPages: 60,
   windowDays: { min: 14, max: 365, default: 90 },
   historyDays: 365,
+  pitHorizon: { min: 7, max: 56 },
 };
 
 /** Page through enhanced JQL search, guarding against repeating pages. */
@@ -95,13 +96,43 @@ async function throughputHistory(search, scopeJql, now, days) {
   return { jql, since, doneDates, truncated };
 }
 
-/** Odds that the target's open items are all done by targetDate. */
+/** Horizon at which past forecasts are replayed to learn the correction. */
+export function pitHorizonFor(targetIsoDate, now) {
+  const days = dayIndex(targetIsoDate) - dayIndex(now) + 1;
+  return Math.min(LIMITS.pitHorizon.max, Math.max(LIMITS.pitHorizon.min, days));
+}
+
+/**
+ * Odds that the target's open items are all done by targetDate: the raw Monte
+ * Carlo odds, and (with enough history) the odds corrected by how this
+ * scope's past forecasts actually turned out.
+ */
 export async function forecast({ search, now, scope, target, targetDate, windowDays, projectKey }) {
   const scopeJql = scopeToJql(scope, projectKey);
   const targetJql = targetToJql(target, scopeJql);
   const date = parseTargetDate(targetDate, now);
   const w = clampWindow(windowDays);
-  const history = await throughputHistory(search, scopeJql, now, w);
+  const warnings = [];
+
+  // One read of the past year serves both the forecast window and the replay.
+  // If the year is too big to read whole, fall back to the window alone.
+  let history = await throughputHistory(search, scopeJql, now, LIMITS.historyDays);
+  let pits = null;
+  const pitHorizon = pitHorizonFor(date, now);
+  if (history.truncated) {
+    warnings.push(`More than ${LIMITS.historyIssues} items finished in the past year, so the odds are not corrected by past accuracy.`);
+    history = await throughputHistory(search, scopeJql, now, w);
+    if (history.truncated) warnings.push(`Read only the first ${LIMITS.historyIssues} finished items; throughput may be understated.`);
+  } else {
+    pits = pitHistory({
+      doneDates: history.doneDates,
+      now,
+      historyStart: history.since,
+      windowDays: w,
+      horizonDays: pitHorizon,
+    }).pits;
+  }
+
   const open = await searchAll(search, openJql(targetJql), ['key'], LIMITS.openIssues);
   const keys = open.issues.map((i) => i.key).filter(Boolean);
   const result = forecastCompletion({
@@ -110,10 +141,13 @@ export async function forecast({ search, now, scope, target, targetDate, windowD
     remaining: keys.length,
     targetDate: date,
     windowDays: w,
+    pits,
+    pitHorizonDays: pitHorizon,
   });
-  const warnings = [];
-  if (history.truncated) warnings.push(`Read only the first ${LIMITS.historyIssues} finished items; throughput may be understated.`);
   if (open.truncated) warnings.push(`Target has more than ${LIMITS.openIssues} open items; only that many were counted.`);
+  if (result.ok && result.remaining > 0 && !result.corrected && pits) {
+    warnings.push(`Only ${pits.length} past forecasts could be replayed (12 needed), so the odds are not corrected yet.`);
+  }
   return {
     ...result,
     scopeJql,
@@ -122,7 +156,10 @@ export async function forecast({ search, now, scope, target, targetDate, windowD
     warnings,
     assumptions:
       'Assumes the next weeks look like the last ' +
-      `${w} days of finished work in this scope, that items are similar in size, and that no new items are added to the target.`,
+      `${w} days of finished work in this scope, that items are similar in size, and that no new items are added to the target.` +
+      (result.corrected
+        ? ` The corrected odds also assume this scope's forecasts will miss in the same way they did over the past year (learned from ${result.corrected.basedOn.n} replayed ${pitHorizon}-day forecasts).`
+        : ''),
   };
 }
 
@@ -167,6 +204,7 @@ export async function record({ search, store, now, scope, target, targetDate, wi
     remaining: f.remaining,
     keys: f.openKeys,
     pModel: f.probability,
+    pCorrected: f.corrected ? f.corrected.probability : null,
     pHuman,
     outcome: f.remaining === 0 ? 1 : null,
     gradedAt: f.remaining === 0 ? createdAt : null,
@@ -201,7 +239,7 @@ export async function gradeDue({ search, store, now }) {
   return { graded };
 }
 
-/** Score of all logged forecasts: model vs. people, Brier score (lower is better). */
+/** Score of all logged forecasts: raw model, corrected model and people, Brier score (lower is better). */
 export async function scoreboard({ store }) {
   const entries = (await store.list(LEDGER)).map((e) => e.value).filter(Boolean);
   entries.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -215,6 +253,7 @@ export async function scoreboard({ store }) {
       targetDate: e.targetDate,
       remaining: e.remaining,
       pModel: e.pModel,
+      pCorrected: e.pCorrected == null ? null : e.pCorrected,
       pHuman: e.pHuman,
       outcome: e.outcome,
     })),

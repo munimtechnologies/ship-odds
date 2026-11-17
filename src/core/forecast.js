@@ -1,4 +1,5 @@
-// Ship Odds core: Monte Carlo throughput forecasts, and their own track record.
+// Ship Odds core: Monte Carlo throughput forecasts, their own track record,
+// and odds corrected by that track record.
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Munim, Inc. Written by AI agents working for MV2 of Munim, Inc.
 //
@@ -6,6 +7,11 @@
 // All day arithmetic is in whole UTC days.
 
 export const DAY_MS = 86400000;
+
+/** Fewest replayed past forecasts before Ship Odds will correct today's odds. */
+export const MIN_PITS = 12;
+/** Pseudo-observations that pull the correction toward "no correction". */
+export const SHRINK_K = 10;
 
 /** Small, fast, seedable PRNG (mulberry32). Returns floats in [0, 1). */
 export function mulberry32(seed) {
@@ -62,6 +68,18 @@ export function quantile(sorted, q) {
   return sorted[idx];
 }
 
+/** How many values of an ascending array are <= x (binary search). */
+export function countAtMost(sorted, x) {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sorted[mid] <= x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /**
  * Simulate how many days it takes to finish `remaining` items, drawing each
  * day's throughput from `samples` (bootstrap of past days). Returns an
@@ -95,10 +113,99 @@ export function simulateCount(samples, horizonDays, runs, rng) {
 }
 
 /**
+ * Randomized probability integral transform (PIT) of a whole-number outcome
+ * under the model's simulated distribution: F(actual - 1) + u * P(actual).
+ * If the model is calibrated, PITs are uniform on [0, 1]. PITs near 0 mean
+ * the team did less than the model expected; near 1, more.
+ */
+export function pitOf(sortedTotals, actual, u) {
+  const n = sortedTotals.length;
+  const below = countAtMost(sortedTotals, actual - 1);
+  const atMost = countAtMost(sortedTotals, actual);
+  return (below + u * (atMost - below)) / n;
+}
+
+/**
+ * Replay the model on the past and return one PIT per past forecast. Only
+ * forecasts whose whole horizon ended by today are used, and each sees only
+ * the windowDays before its own start, exactly like a live forecast would.
+ */
+export function pitHistory({
+  doneDates,
+  now,
+  historyStart,
+  windowDays = 90,
+  horizonDays = 14,
+  stepDays = 7,
+  runs = 1000,
+  seed = 11,
+  maxOrigins = 60,
+}) {
+  const today = dayIndex(now);
+  const doneDays = doneDates.map(dayIndex);
+  const firstDay = historyStart != null ? dayIndex(historyStart) : Math.min(...doneDays);
+  const lastOrigin = today - horizonDays;
+  const firstOrigin = firstDay + windowDays;
+  const pits = [];
+  if (!doneDays.length || !Number.isFinite(firstDay) || lastOrigin < firstOrigin) {
+    return { pits, horizonDays, windowDays };
+  }
+  const allCounts = dailyCounts(doneDays, firstDay, today);
+  const rng = mulberry32(seed);
+  const urng = mulberry32(seed + 1);
+  for (let t = lastOrigin; t >= firstOrigin && pits.length < maxOrigins; t -= stepDays) {
+    const samples = allCounts.slice(t - windowDays - firstDay, t - firstDay);
+    if (samples.reduce((a, b) => a + b, 0) === 0) continue;
+    const totals = simulateCount(samples, horizonDays, runs, rng);
+    let actual = 0;
+    for (let d = t; d < t + horizonDays; d++) actual += allCounts[d - firstDay];
+    pits.push(pitOf(totals, actual, urng()));
+  }
+  return { pits, horizonDays, windowDays };
+}
+
+/**
+ * Recalibration map G learned from past PITs (empirical CDF), shrunk toward
+ * the identity with `k` pseudo-observations so a short history corrects only
+ * a little. G(x) = (#{pit <= x} + k x) / (n + k).
+ */
+export function recalibrator(pits, k = SHRINK_K) {
+  const s = [...pits].sort((a, b) => a - b);
+  const n = s.length;
+  return (x) => {
+    const c = Math.min(1, Math.max(0, x));
+    return (countAtMost(s, c) + k * c) / (n + k);
+  };
+}
+
+/**
+ * Corrected probability of "at least r items" given the raw model probability
+ * p = P(total >= r) = 1 - F(r - 1): the calibrated CDF is G(F), so the answer
+ * is 1 - G(1 - p). Monotone in p, keeps 0 at 0.
+ */
+export function correctProbability(p, G) {
+  if (p == null || !Number.isFinite(p)) return p;
+  return Math.min(1, Math.max(0, 1 - G(1 - p)));
+}
+
+/** Summary of past PITs: how often the team fell in the model's slow tail (bottom 15%). */
+export function pitSummary(pits) {
+  if (!pits.length) return null;
+  const slow = pits.filter((p) => p <= 0.15).length / pits.length;
+  const fast = pits.filter((p) => p >= 0.85).length / pits.length;
+  const mean = pits.reduce((a, b) => a + b, 0) / pits.length;
+  return { n: pits.length, mean: round(mean, 3), slowTail: round(slow, 3), fastTail: round(fast, 3) };
+}
+
+/**
  * Forecast when `remaining` items will be done, and the odds of finishing by targetDate.
  *
  * Day 1 of the simulation is "today" (the UTC day of `now`); history is the
  * `windowDays` whole days before today, so today's partial day is never sampled.
+ *
+ * If `pits` (from pitHistory) has at least MIN_PITS entries, the result also
+ * has `corrected`: the same odds and dates after correcting for how the model's
+ * past forecasts on this scope actually turned out.
  */
 export function forecastCompletion({
   doneDates,
@@ -108,6 +215,8 @@ export function forecastCompletion({
   windowDays = 90,
   runs = 10000,
   seed = 1,
+  pits = null,
+  pitHorizonDays = null,
 }) {
   const today = dayIndex(now);
   const doneDays = doneDates.map(dayIndex);
@@ -126,7 +235,7 @@ export function forecastCompletion({
     return { ok: false, reason: 'remaining must be a whole number of items, 0 or more', ...base };
   }
   if (remaining === 0) {
-    return { ok: true, probability: targetDate ? 1 : null, dates: null, note: 'Nothing is left to do.', ...base };
+    return { ok: true, probability: targetDate ? 1 : null, dates: null, corrected: null, note: 'Nothing is left to do.', ...base };
   }
   if (finishedInWindow === 0) {
     return {
@@ -141,17 +250,35 @@ export function forecastCompletion({
     const d = quantile(days, q);
     return Number.isFinite(d) ? dayToIso(today + d - 1) : null;
   };
+  // Raw P(done within `allowed` days, today included).
+  const pDoneWithin = (allowed) => countAtMost(days, allowed) / runs;
   let probability = null;
-  if (targetDate) {
-    const allowed = dayIndex(targetDate) - today + 1; // days available, today included
-    let hits = 0;
-    for (const d of days) if (d <= allowed) hits += 1;
-    probability = round(hits / runs, 4);
+  if (targetDate) probability = round(pDoneWithin(dayIndex(targetDate) - today + 1), 4);
+
+  let corrected = null;
+  if (Array.isArray(pits) && pits.length >= MIN_PITS) {
+    const G = recalibrator(pits);
+    const lastFinite = days.filter(Number.isFinite).pop();
+    const correctedDateAt = (q) => {
+      if (lastFinite == null) return null;
+      for (let d = 1; d <= lastFinite; d++) {
+        if (correctProbability(pDoneWithin(d), G) >= q) return dayToIso(today + d - 1);
+      }
+      return null; // beyond anything the simulation reached: say "later than we can tell"
+    };
+    corrected = {
+      probability: probability == null ? null : round(correctProbability(probability, G), 4),
+      dates: { p50: correctedDateAt(0.5), p85: correctedDateAt(0.85), p95: correctedDateAt(0.95) },
+      basedOn: pitSummary(pits),
+      horizonDays: pitHorizonDays,
+      shrinkK: SHRINK_K,
+    };
   }
   return {
     ok: true,
     probability,
     dates: { p50: dateAt(0.5), p85: dateAt(0.85), p95: dateAt(0.95) },
+    corrected,
     ...base,
   };
 }
@@ -280,7 +407,7 @@ function summarizeCalibration(table, origins, horizonDays) {
   const parts = judged.map((r) => `${pct(r.stated)} stated, ${pct(r.hitRate)} came true`);
   let head = `Replayed ${origins} past ${horizonDays}-day forecasts. `;
   if (!over.length && !under.length) head += 'Its odds matched what happened at every level checked. ';
-  if (over.length) head += `Overconfident at ${over.join(', ')}: discount those odds. `;
+  if (over.length) head += `Overconfident at ${over.join(', ')}: the corrected odds discount them. `;
   if (under.length) head += `Underconfident at ${under.join(', ')}: it was too cautious. `;
   return head + `(${parts.join('; ')}.)`;
 }
@@ -307,6 +434,7 @@ export function scoreLedger(entries) {
     graded: graded.length,
     open: entries.length - graded.length,
     model: brier('pModel'),
+    corrected: brier('pCorrected'),
     human: brier('pHuman'),
     reliability: bins
       .filter((b) => b.n)

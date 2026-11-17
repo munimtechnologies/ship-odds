@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Munim, Inc. Written by AI agents working for MV2 of Munim, Inc.
-"""Runs Ship Odds' JavaScript tests under Node and checks the Forge manifest.
+"""Runs Ship Odds' JavaScript tests under Node and checks the Forge manifest and the agent skill.
 
 The core (src/core/*.js) has no dependencies, so `node --test` needs no npm install.
 """
@@ -50,6 +50,8 @@ class ManifestTests(unittest.TestCase):
         used = set(re.findall(r"^\s+function: ([\w-]+)\s*$", self.text, re.M))
         self.assertTrue(used, "no function references found")
         self.assertTrue(used <= keys, used - keys)
+        for k in keys:
+            self.assertLessEqual(len(k), 23, k)  # Forge limit for function keys
 
     def test_agent_actions_declared(self):
         declared = set(re.findall(r"^    - key: (ship-odds-[\w-]+)\n      name: .*\n      function:", self.text, re.M))
@@ -60,9 +62,16 @@ class ManifestTests(unittest.TestCase):
     def test_agent_name_length_and_scopes(self):
         names = re.findall(r"rovo:agent:\n    - key: [\w-]+\n      name: (.+)", self.text)
         self.assertTrue(names and len(names[0].strip()) <= 30)
+        mcp = re.findall(r"rovo:mcp:\n    - key: [\w-]+\n      name: (.+)", self.text)
+        self.assertTrue(mcp and len(mcp[0].strip()) <= 30)
         self.assertIn("read:jira-work", self.text)
         self.assertIn("storage:app", self.text)
         self.assertNotRegex(self.text, r"write:jira-work")
+
+    def test_timeout_only_on_trigger(self):
+        # timeoutSeconds only affects scheduled triggers and async consumers.
+        self.assertEqual(len(re.findall(r"timeoutSeconds:", self.text)), 1)
+        self.assertRegex(self.text, r"handler: index\.gradeDaily\n\s+timeoutSeconds: \d+")
 
     def test_prompt_resource_exists(self):
         self.assertTrue(os.path.exists(os.path.join(HERE, "prompts", "agent.md")))
@@ -73,6 +82,22 @@ class ManifestTests(unittest.TestCase):
             self.assertIn('"license": "Apache-2.0"', f.read())
         with open(os.path.join(HERE, "LICENSE"), encoding="utf-8") as f:
             self.assertIn("Apache License", f.read())
+
+
+class SkillTests(unittest.TestCase):
+    def test_skill_frontmatter_and_tools(self):
+        path = os.path.join(HERE, "skills", "ship-odds", "SKILL.md")
+        with open(path, encoding="utf-8") as f:
+            text = f.read().replace("\r\n", "\n")
+        m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+        self.assertTrue(m, "SKILL.md needs YAML frontmatter")
+        self.assertRegex(m.group(1), r"(?m)^name: ship-odds$")
+        self.assertRegex(m.group(1), r"(?m)^description: .{40,1024}$")
+        with open(os.path.join(HERE, "manifest.yml"), encoding="utf-8") as f:
+            manifest = f.read().replace("\r\n", "\n")
+        tools = re.search(r"rovo:mcp:\n(?:.*\n)*?      tools:\n((?:        - .+\n)+)", manifest).group(1)
+        for tool in re.findall(r"- ([\w-]+)", tools):
+            self.assertIn("`%s`" % tool, text, tool)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 {
   "name": "ship-odds",
-  "version": "0.1.1",
-  "description": "Jira delivery forecasts that grade themselves: Monte Carlo odds from your own throughput, a hindcast of how often those odds came true, and a scoreboard. Forge app with a Rovo agent and MCP tools.",
+  "version": "0.2.0",
+  "description": "Jira delivery odds that correct themselves: Monte Carlo odds from your own throughput, recalibrated by how often such odds came true for your team before, with a track record and a scoreboard. Forge app with a Rovo agent and MCP tools.",
   "license": "Apache-2.0",
   "author": "MV2 of Munim, Inc. <mv2@munimtech.com>",
   "private": true,

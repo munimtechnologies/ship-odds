@@ -9,7 +9,7 @@ modules:
   rovo:agent:
     - key: ship-odds-agent
       name: Ship Odds
-      description: Forecasts when Jira work will ship, with odds from your team's own finished work, and shows how often those odds came true in the past.
+      description: Forecasts when Jira work will ship, with odds from your team's own finished work, corrected by how often such odds came true for your team before.
       prompt: resource:agent-prompt;agent.md
       conversationStarters:
         - What are the odds we finish this version by the end of the month?
@@ -32,7 +32,7 @@ modules:
       name: Forecast delivery odds
       function: forecast-action
       actionVerb: GET
-      description: Computes the probability that the open Jira work items of a target (a version name, an epic key, or JQL) are all done by a target date, plus the 50%, 85% and 95% finish dates, by Monte Carlo simulation of the scope's daily throughput over a recent window. Read-only.
+      description: Computes the probability that the open Jira work items of a target (a version name, an epic key, or JQL) are all done by a target date, plus the 50%, 85% and 95% finish dates, by Monte Carlo simulation of the scope's daily throughput over a recent window. With a year of history it also returns corrected odds and dates, recalibrated from how the same model's past forecasts on this scope turned out. Read-only.
       inputs:
         target:
           title: Target
@@ -79,7 +79,7 @@ modules:
       name: Record a forecast
       function: record-action
       actionVerb: CREATE
-      description: Makes a delivery forecast and saves it, with the user's own probability if given, so it is graded automatically the day after the target date and counted on the scoreboard.
+      description: Makes a delivery forecast and saves it, with the user's own probability if given, so it is graded automatically the day after the target date and counted on the scoreboard (raw model, corrected model and people).
       inputs:
         target:
           title: Target
@@ -105,7 +105,7 @@ modules:
       name: Show the forecast scoreboard
       function: scoreboard-action
       actionVerb: GET
-      description: Lists recorded forecasts and their outcomes, with Brier scores for the model and for people (lower is better). Read-only.
+      description: Lists recorded forecasts and their outcomes, with Brier scores for the raw model, the corrected model and people (lower is better). Read-only.
       inputs:
         detail:
           title: Detail
@@ -129,6 +129,7 @@ modules:
       handler: index.scoreboardAction
     - key: grade-daily
       handler: index.gradeDaily
+      timeoutSeconds: 300
 resources:
   - key: main
     path: src/frontend/index.jsx
