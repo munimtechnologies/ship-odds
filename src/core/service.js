@@ -42,11 +42,18 @@ export async function searchAll(search, jql, fields, limit) {
   return { issues, truncated: false };
 }
 
-/** The day an issue reached Done (status category change, else resolution date). */
+/**
+ * When an issue was finished: its resolution date, else its status-category
+ * change date (for workflows that never set a resolution). Same rule as
+ * finishedSinceClause in jql.js, so the JQL count and these dates agree.
+ */
 export function doneTime(issue) {
   const f = (issue && issue.fields) || {};
-  const t = parseTime(f.statuscategorychangedate || f.resolutiondate || '');
-  return Number.isFinite(t) ? t : null;
+  for (const v of [f.resolutiondate, f.statuscategorychangedate]) {
+    const t = parseTime(v || '');
+    if (Number.isFinite(t)) return t;
+  }
+  return null;
 }
 
 export function clampWindow(windowDays) {
@@ -81,7 +88,7 @@ async function throughputHistory(search, scopeJql, now, days) {
   const { issues, truncated } = await searchAll(
     search,
     jql,
-    ['statuscategorychangedate', 'resolutiondate'],
+    ['resolutiondate', 'statuscategorychangedate'],
     LIMITS.historyIssues,
   );
   const doneDates = issues.map(doneTime).filter((t) => t != null);

@@ -51,9 +51,20 @@ export function targetToJql(target, scopeJql) {
   return `(${scopeJql}) AND fixVersion = ${quote(t)}`;
 }
 
+/**
+ * "Finished on or after a day": the resolution date when the item has one
+ * (it survives CSV imports and migrations), else the status-category change
+ * date (for workflows that never set a resolution). doneTime() in service.js
+ * applies the same rule to the dates it reads, so counts and dates agree.
+ */
+export function finishedSinceClause(isoDate) {
+  const d = quote(isoDate);
+  return `(resolved >= ${d} OR (resolution is EMPTY AND statusCategoryChangedDate >= ${d}))`;
+}
+
 /** Items finished in scope since a day ("YYYY-MM-DD"). */
 export function historyJql(scopeJql, sinceIsoDate) {
-  return `(${scopeJql}) AND statusCategory = Done AND statusCategoryChangedDate >= ${quote(sinceIsoDate)}`;
+  return `(${scopeJql}) AND statusCategory = Done AND ${finishedSinceClause(sinceIsoDate)}`;
 }
 
 /** Items of the target that are not done yet. */
@@ -68,5 +79,5 @@ export function openJql(targetJql) {
 export function lateJql(keys, dayAfterIsoDate) {
   const safe = keys.filter((k) => /^[A-Z][A-Z0-9_]*-\d+$/.test(k));
   if (!safe.length) throw new Error('No valid issue keys to grade.');
-  return `key in (${safe.join(',')}) AND (statusCategory != Done OR statusCategoryChangedDate >= ${quote(dayAfterIsoDate)})`;
+  return `key in (${safe.join(',')}) AND (statusCategory != Done OR ${finishedSinceClause(dayAfterIsoDate)})`;
 }

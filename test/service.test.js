@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { DAY_MS, dayIndex, dayToIso } from '../src/core/forecast.js';
 import {
   calibration,
+  doneTime,
   forecast,
   gradeDue,
   parseProbability,
@@ -15,27 +16,36 @@ import {
 
 const NOW = '2026-11-17T12:00:00Z';
 const TODAY = dayIndex(NOW);
+const jiraTime = (day, hour = 9) => new Date(day * DAY_MS + hour * 3600 * 1000).toISOString().replace('Z', '+0000');
 
 // 2 items finished every day for the last 400 days, in Jira's own date format.
 const FINISHED = [];
 for (let d = 1; d <= 400; d++) {
   for (let k = 0; k < 2; k++) {
-    const iso = new Date((TODAY - d) * DAY_MS + 9 * 3600 * 1000).toISOString().replace('Z', '+0000');
-    FINISHED.push({ id: `h${d}-${k}`, key: `ENG-${1000 + d * 2 + k}`, fields: { statuscategorychangedate: iso } });
+    FINISHED.push({ id: `h${d}-${k}`, key: `ENG-${1000 + d * 2 + k}`, fields: { statuscategorychangedate: jiraTime(TODAY - d) } });
   }
 }
 const OPEN = Array.from({ length: 10 }, (_, i) => ({ id: `o${i}`, key: `ENG-${101 + i}` }));
 
-// A fake /rest/api/3/search/jql that pages 100 at a time.
-function fakeJira({ late = [] } = {}) {
+// The same history as it looks after a CSV import done today: real resolution
+// dates, but every status-category change date is the import day.
+const IMPORTED = FINISHED.map((i) => ({
+  ...i,
+  fields: { resolutiondate: i.fields.statuscategorychangedate, statuscategorychangedate: jiraTime(TODAY, 8) },
+}));
+
+// A fake /rest/api/3/search/jql that pages 100 at a time and applies the
+// finished-since rule the way Jira would (resolved date first).
+function fakeJira({ late = [], finished = FINISHED } = {}) {
   const calls = [];
   const search = async (body) => {
     calls.push(body);
     let pool;
     if (body.jql.startsWith('key in')) pool = OPEN.filter((i) => late.includes(i.key));
     else if (body.jql.includes('statusCategory = Done')) {
-      const since = dayIndex(body.jql.match(/>= "(\d{4}-\d{2}-\d{2})"/)[1]);
-      pool = FINISHED.filter((i) => dayIndex(i.fields.statuscategorychangedate) >= since);
+      assert.match(body.jql, /resolved >= "(\d{4}-\d{2}-\d{2})" OR \(resolution is EMPTY AND statusCategoryChangedDate >= "\1"\)/);
+      const since = dayIndex(body.jql.match(/resolved >= "(\d{4}-\d{2}-\d{2})"/)[1]);
+      pool = finished.filter((i) => dayIndex(i.fields.resolutiondate || i.fields.statuscategorychangedate) >= since);
     } else if (body.jql.includes('statusCategory != Done')) pool = OPEN;
     else throw new Error(`unexpected JQL ${body.jql}`);
     const start = body.nextPageToken ? Number(body.nextPageToken) : 0;
@@ -56,6 +66,16 @@ function memoryStore() {
   };
 }
 
+test('doneTime prefers the resolution date', () => {
+  const res = '2026-01-05T10:00:00.000+0000';
+  const cat = '2026-03-01T10:00:00.000+0000';
+  assert.equal(doneTime({ fields: { resolutiondate: res, statuscategorychangedate: cat } }), Date.parse('2026-01-05T10:00:00Z'));
+  assert.equal(doneTime({ fields: { resolutiondate: null, statuscategorychangedate: cat } }), Date.parse('2026-03-01T10:00:00Z'));
+  assert.equal(doneTime({ fields: { resolutiondate: 'garbage', statuscategorychangedate: cat } }), Date.parse('2026-03-01T10:00:00Z'));
+  assert.equal(doneTime({ fields: {} }), null);
+  assert.equal(doneTime(null), null);
+});
+
 test('forecast reads history and open items through paged search', async () => {
   const { search, calls } = fakeJira();
   const r = await forecast({ search, now: NOW, scope: 'ENG', target: '2.4', targetDate: dayToIso(TODAY + 4) });
@@ -66,8 +86,19 @@ test('forecast reads history and open items through paged search', async () => {
   assert.equal(r.scopeJql, 'project = "ENG"');
   assert.equal(r.targetJql, '(project = "ENG") AND fixVersion = "2.4"');
   assert.ok(calls.some((c) => c.nextPageToken), 'history should need more than one page');
+  assert.deepEqual(calls[0].fields, ['resolutiondate', 'statuscategorychangedate']);
   const tight = await forecast({ search, now: NOW, scope: 'ENG', target: '2.4', targetDate: dayToIso(TODAY + 3) });
   assert.equal(tight.probability, 0);
+});
+
+test('imported history (status dates all today) is read by resolution date', async () => {
+  const { search } = fakeJira({ finished: IMPORTED });
+  const r = await forecast({ search, now: NOW, scope: 'ENG', target: '2.4', targetDate: dayToIso(TODAY + 4) });
+  assert.equal(r.finishedInWindow, 180, 'all 90 window days keep their 2 items');
+  assert.equal(r.probability, 1);
+  const c = await calibration({ search, now: NOW, scope: 'ENG' });
+  assert.equal(c.finishedItems, 730);
+  for (const row of c.table) assert.equal(row.hitRate, 1);
 });
 
 test('forecast uses the project the user is in', async () => {
