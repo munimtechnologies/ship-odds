@@ -6,6 +6,8 @@ Ship Odds answers "will we make the date?" with a probability computed from your
 
 Most delivery forecasters sell an "85% date". Some now show whether those dates came true. Ship Odds also uses that record to fix the number you are about to promise a customer.
 
+**What we found when we tested it (pre-registered, 25 public Apache projects, details below):** the usual Monte Carlo "85%" statement came true **80%** of the time at two weeks and **75%** at four weeks. Learning from each project's own record brought that to **84.7%** and **81.2%**. The correction fixes the dates you promise; it does not make every single-date probability more accurate.
+
 It is a [Forge](https://developer.atlassian.com/platform/forge/) app for Jira Cloud with:
 
 - a **Jira project page**: type a version name, epic key or JQL and a date, and get the corrected odds and 50% / 85% / 95% dates, next to the raw model's;
@@ -13,7 +15,7 @@ It is a [Forge](https://developer.atlassian.com/platform/forge/) app for Jira Cl
 - **MCP tools** (Forge `rovo:mcp`), so the forecast, calibration and scoreboard can be used from Rovo Studio agents or from MCP clients such as Claude Code, Cursor or Codex, once a site admin turns them on. [`skills/ship-odds/SKILL.md`](skills/ship-odds/SKILL.md) tells a coding agent how to use them;
 - a **scoreboard**: record a forecast, optionally with your own guess ("I think 70%"). After the target date it is graded automatically, and the raw model, the corrected model and the people get Brier scores, so the correction is checked live too.
 
-Status: **0.2.1, not yet deployed to a live Jira site.** The forecasting, correction, hindcast, JQL and grading logic is covered by automated tests against a fake Jira (`npm test`, or `python -m unittest test_ship_odds`). On 2026-11-17 the 0.2.0 code was installed from npm on a Windows machine with Node 24, and all 33 JavaScript tests passed there. 0.2.1 pins every dependency to an exact version, so the build is reproducible. The Forge UI and Rovo wiring still have to be tried on a real developer site; this README will say when they have been.
+Status: **0.2.2, not yet deployed to a live Jira site.** The forecasting, correction, hindcast, JQL and grading logic is covered by automated tests against a fake Jira (`npm test`, or `python -m unittest test_ship_odds`). On 2026-11-17 the 0.2.0 code was installed from npm on a Windows machine with Node 24, and all 33 JavaScript tests passed there. Every dependency is pinned to an exact version. The Forge UI and Rovo wiring still have to be tried on a real developer site; this README will say when they have been. 0.2.2 changes no app code: it adds the graded results of the two pre-registered studies.
 
 ## How it works
 
@@ -29,9 +31,22 @@ Status: **0.2.1, not yet deployed to a live Jira site.** The forecasting, correc
 
 6. **Scoreboard.** A recorded forecast stores the open issue keys, the raw odds and the corrected odds. The day after the target date, a daily job checks whether all of those issues were finished by the end of that date (UTC). The outcome is 1 or 0. The Brier score is the mean of (probability - outcome)²: 0 is perfect, and 0.25 is what always saying 50% earns.
 
-## Does the correction actually help?
+## Does the correction actually help? Results
 
-That is an empirical question, so it is being tested in the open rather than assumed. [`study/calib-apache/`](study/calib-apache/) is a pre-registered study on about 50 public Apache Software Foundation Jira projects. Part 1 asks whether the raw model's odds come true at their stated rate. Part 2 ([`study/recal-apache/`](study/recal-apache/)) asks whether the correction above, learned only from each project's own past (out of sample, forecast by forecast), brings the 85% statements closer to 85% and lowers the Brier score. Both sets of predictions were written down before any data was fetched. Results will be committed as they are, whichever way they go.
+We tested this in the open instead of assuming it. Both studies were pre-registered on 2026-11-17, before any data was fetched, and graded on 2026-11-19 exactly as written: [`study/GRADING.md`](study/GRADING.md). They used public Apache Software Foundation Jira data: issues resolved as Fixed from 2024-11-01 to 2026-11-01, per UTC day. Of 50 candidate projects, 25 had at least 200 such issues and were kept. The jobs ran on 2026-11-18 on MV2's Windows desktop (Python 3.11.9, standard library only, code as tagged `v0.2.1`).
+
+**Part 1: are the raw odds calibrated?** ([`study/calib-apache/`](study/calib-apache/), [results](study/calib-apache/RESULTS.md)) No, they are too optimistic. For the 90-day daily bootstrap at a 14-day horizon, "85%" statements (mean stated probability 0.882) came true 0.800 of the time, and 23 of 25 projects were below their stated rate. At 28 days the rate was 0.751. A 7-day block bootstrap was a little better (0.827). Four of six predictions held. P2 (95% statements below 0.90; actual 0.905) failed, and so did P5 (a 30-day window worse than 90 days; it was slightly better). In a synthetic control where the model's assumptions are exactly true, the same statements came true 0.849 of the time. So about 3 of the 8 missing points are the method's own optimism, and the rest come from real teams' pace changing.
+
+**Part 2: does the self-correction help, out of sample?** ([`study/recal-apache/`](study/recal-apache/), [results](study/recal-apache/RESULTS.md)) Partly. Learned only from each project's own earlier forecasts:
+
+| 85% statements came true | raw | corrected |
+|---|---|---|
+| 14-day horizon | 0.793 | **0.847** |
+| 28-day horizon | 0.740 | **0.812** |
+
+Four of five predictions held. The mean Brier score improved only a little (0.1822 to 0.1808), and only 8 of 25 projects improved (R5 needed 60% and failed). The gain comes from a few badly miscalibrated projects (HUDI, AMQ, ORC, KAFKA). On most of the others the correction adds a little noise. Corrected 85% counts are about 14% lower than raw ones: that is what an honest promise costs. Synthetic controls behaved as designed: no help on stable teams, a large gain on teams whose pace drifts down.
+
+**What we changed because of it.** Ship Odds still shows the corrected 85% and 95% dates, because their hit rates are much closer to what they claim. It does not claim that the corrected probability for one date is more accurate for every team; the track record and the scoreboard let each team check that for themselves. Next we will pre-register a rule that applies the correction only when a project's own record shows a clear miss, and test it on projects and trackers not used here. Prior work: practitioner write-ups and at least one blog post with calibration heatmaps for three anonymized teams, and academic work on predicting Apache Jira iteration delivery (Choetkiertikul et al., TSE 2018). As far as we found, this is the first public, pre-registered, multi-project test of these forecasts with open code and data, and the first test of PIT self-correction in an agile forecasting tool.
 
 ## Assumptions and limits
 
@@ -41,6 +56,7 @@ That is an empirical question, so it is being tested in the open rather than ass
 - "Finished" means in the status category Done. The date used is the **resolution date**; for items without a resolution (workflows that never set one) it is the date the item entered the Done category. Resolution comes first because it survives CSV imports and migrations. Days are UTC days.
 - Reads at most 5,000 finished items and 1,000 open items per request. If more than 5,000 items finished in the past year, the forecast uses the window only and is not corrected; it says so.
 - Deleted issues count as done when a forecast is graded.
+- The study covers large open-source projects. A product team with planned scope may behave differently.
 
 ## Permissions and data
 
@@ -70,7 +86,7 @@ A forecasting app needs history to show anything, and a fresh developer site has
 
 Every imported issue links back to its Apache original and says the dates were moved. One limit: Apache assigns fix versions in hindsight, so the "open at the cutoff" set is what eventually shipped in that version, not what the team planned at the time.
 
-**First run (2026-11-17).** The script chose Apache Solr, fix version 10.1: 421 issues finished in the year before the cutoff (2026-09-28), and 27 of the version's issues were still open at the cutoff. The raw model gave 96% odds that all 27 would be done by the release day (2026-10-26). In fact 25 were, and the last 2 were finished 4 days later, on 2026-10-30. A single forecast proves nothing either way. Telling a well-calibrated 96% from an overconfident one takes many forecasts, which is why the study above exists.
+**First run (2026-11-17).** The script chose Apache Solr, fix version 10.1: 421 issues finished in the year before the cutoff (2026-09-28), and 27 of the version's issues were still open at the cutoff. The raw model gave 96% odds that all 27 would be done by the release day (2026-10-26). In fact 25 were, and the last 2 were finished 4 days later, on 2026-10-30. A single forecast proves nothing either way, which is why the study above exists. On 2026-11-17 this history was imported into a demo project on a Jira developer site.
 
 ## Tests
 
@@ -82,6 +98,6 @@ python -m unittest demo/test_apache_demo.py  # demo builder, offline
 
 ## About
 
-Built by MV2 of Munim, Inc. (mv2@munimtech.com) as an entry to Atlassian's Codegeist 2026 hackathon. The code was written with AI agents working in his name and checked by the automated tests above.
+Built by MV2 of Munim, Inc. (mv2@munimtech.com) as an entry to Atlassian's Codegeist 2026 hackathon. The code and the studies were made with AI agents working in his name and checked by the automated tests and pre-registrations above. No human expert has reviewed the study yet.
 
-Licence: Apache-2.0 (see LICENSE). It uses Atlassian's Forge packages (`@forge/*`) and React (MIT). Demo issue titles come from the Apache Software Foundation's public Jira.
+Licence: Apache-2.0 (see LICENSE). Study text: CC BY 4.0. It uses Atlassian's Forge packages (`@forge/*`) and React (MIT). Demo issue titles come from the Apache Software Foundation's public Jira.
