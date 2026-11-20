@@ -60,5 +60,59 @@ class GradingMatchesResults(unittest.TestCase):
         self.assertEqual(gains[:4], ["HUDI", "AMQ", "ORC", "KAFKA"])
 
 
+class Part3MatchesResults(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.rep = load("replicate-trackers", "results.json")
+        with open(os.path.join(HERE, "GRADING.md"), encoding="utf-8") as f:
+            cls.grading = f.read()
+        cls.per = cls.rep["per_project"]["A_h14"]
+        cls.arms = cls.rep["summaries"]["A_h14"]["summary"]["arms"]
+
+    def test_verdicts(self):
+        held = {k.split("_")[0]: v["held"] for k, v in self.rep["predictions"].items()}
+        self.assertEqual(held, {"T1": True, "T2": True, "T3": True, "T4": True, "T5": True, "T6": False, "T7": True})
+        self.assertIn("**the gate is not adopted.**", self.grading)
+
+    def test_kept_projects_listed(self):
+        kept = self.rep["projects_kept"]
+        self.assertEqual(len(kept), 28)
+        self.assertEqual(sorted(self.per), sorted(kept))
+        by_tracker = {}
+        for key in kept:
+            tracker, project = key.split(":")
+            by_tracker[tracker] = by_tracker.get(tracker, 0) + 1
+            self.assertIn(project, self.grading)
+        self.assertEqual(by_tracker, {"mongodb": 10, "atlassian": 8, "jenkins": 1, "redhat": 9})
+        self.assertEqual(len(self.rep["fetched"]), 47)
+
+    def test_headline_numbers_quoted(self):
+        for arm in ("raw", "cal", "gated", "k40"):
+            self.assertIn(str(self.arms[arm]["brier"]), self.grading, arm)
+        for arm in ("raw", "cal"):
+            self.assertIn(str(self.arms[arm]["levels"]["0.85"]["hit"]), self.grading, arm)
+        self.assertEqual(self.arms["raw"]["levels"]["0.85"]["hit"], 0.8363)
+        self.assertEqual(self.arms["cal"]["levels"]["0.85"]["hit"], 0.8664)
+
+    def test_cal_better_projects(self):
+        better = sorted(k for k, r in self.per.items() if r["arms"]["cal"]["brier"] < r["arms"]["raw"]["brier"])
+        self.assertEqual(better, ["atlassian:CONFSERVER", "mongodb:CDRIVER", "mongodb:NODE", "mongodb:PYTHON"])
+        self.assertAlmostEqual(len(better) / 28, self.arms["cal"]["share_better_than_raw"], places=4)
+
+    def test_gate_counts(self):
+        closed = [k for k, r in self.per.items() if r["gate_share"] == 0]
+        opened = [k for k, r in self.per.items() if r["gate_share"] > 0]
+        self.assertEqual((len(closed), len(opened)), (17, 11))
+        for k in closed:  # a gate that never opens must return the raw forecast exactly
+            self.assertEqual(self.per[k]["arms"]["gated"]["brier"], self.per[k]["arms"]["raw"]["brier"], k)
+        better = [k for k in opened if self.per[k]["arms"]["gated"]["brier"] < self.per[k]["arms"]["raw"]["brier"]]
+        self.assertEqual(better, ["mongodb:PYTHON"])
+        wfly = self.per["redhat:WFLY"]
+        self.assertAlmostEqual(wfly["gate_share"], 0.78, places=2)
+        self.assertEqual(round(wfly["arms"]["raw"]["brier"], 5), 0.19533)
+        self.assertEqual(round(wfly["arms"]["gated"]["brier"], 5), 0.21572)
+        self.assertIn("0.19533 to 0.21572", self.grading)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,12 +55,16 @@ function Calibration({ cal }) {
       <DynamicTable head={t.head} rows={t.rows} />
       <Text>
         Replayed on {cal.finishedItems} items finished since {cal.historySince}, using {cal.windowDays}-day
-        windows. Past windows overlap, so treat the ranges as a rough guide. This record is what the corrected odds above learn from.
+        windows. Past windows overlap, so treat the ranges as a rough guide. This record is what the promise dates above learn from.
       </Text>
     </Stack>
   );
 }
 
+// Since 0.2.3 the headline is the raw odds for the date. In MV2's pre-registered tests on 53 public
+// Jira projects (study/GRADING.md), the corrected 85% and 95% dates came true much closer to their
+// claim, but the corrected probability for a single date was less accurate than the raw one on most
+// projects. So the corrected dates are shown as promise dates and the corrected odds as a second number.
 function Result({ res }) {
   if (!res) return null;
   if (res.error || !res.ok) {
@@ -68,15 +72,17 @@ function Result({ res }) {
   }
   const c = res.corrected;
   const headline = c
-    ? `${pct(c.probability)} chance to finish by ${res.targetDate} (corrected; the raw model says ${pct(res.probability)})`
+    ? `${pct(res.probability)} chance to finish by ${res.targetDate} (corrected by this project's record: ${pct(c.probability)})`
     : `${pct(res.probability)} chance to finish by ${res.targetDate}`;
   return (
     <SectionMessage appearance={c && c.probability < res.probability - 0.1 ? 'warning' : 'success'} title={headline}>
       {c ? (
         <Text>
-          Corrected dates: 50% by {day(c.dates.p50)}; 85% by {day(c.dates.p85)}; 95% by {day(c.dates.p95)}. The correction
-          comes from {c.basedOn.n} past {c.horizonDays}-day forecasts on this project: in {pct(c.basedOn.slowTail)} of them
-          the team landed in the model's slowest 15% (a calibrated model: 15%).
+          <Strong>Promise dates</Strong> (corrected by this project's record): 85% by {day(c.dates.p85)}; 95% by{' '}
+          {day(c.dates.p95)}. They come from {c.basedOn.n} past {c.horizonDays}-day forecasts on this project: in{' '}
+          {pct(c.basedOn.slowTail)} of them the team landed in the model's slowest 15% (a calibrated model: 15%). In
+          tests on public Jira projects, corrected 85% dates came true closer to 85% than raw ones; the corrected odds for
+          a single date were not more accurate, so the headline shows the raw odds.
         </Text>
       ) : null}
       <Text>
@@ -154,7 +160,8 @@ function App() {
       <Stack space="space.100">
         <Heading as="h2">Ship Odds</Heading>
         <Text>
-          The odds of finishing on time, from this project's own throughput, corrected by how often such odds came true here before.
+          The odds of finishing on time, from this project's own throughput, with promise dates corrected by how often such
+          forecasts came true here before.
         </Text>
       </Stack>
       <Box>
